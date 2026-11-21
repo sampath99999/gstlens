@@ -19,6 +19,7 @@ from transformers import (
     TrainerCallback,
     TrainingArguments,
 )
+from transformers.trainer_utils import get_last_checkpoint
 
 from gstlens.data.build import read_jsonl
 from gstlens.prompts import build_messages, target_to_text
@@ -48,8 +49,10 @@ class TrainConfig:
     warmup_ratio: float = 0.03
     eval_examples: int = 48
     eval_steps: int = 100
+    save_steps: int = 25
     seed: int = 7
     fp16: bool = True
+    resume: bool = False
 
 
 def encode_example(
@@ -202,7 +205,7 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
         eval_strategy="steps",
         eval_steps=cfg.eval_steps,
         save_strategy="steps",
-        save_steps=cfg.eval_steps,
+        save_steps=cfg.save_steps,
         save_total_limit=2,
         report_to=[],
         seed=cfg.seed,
@@ -219,8 +222,12 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
     )
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
+    ckpt_dir = Path(args.output_dir)
+    checkpoint = get_last_checkpoint(str(ckpt_dir)) if cfg.resume and ckpt_dir.is_dir() else None
+    if checkpoint:
+        log.info("resuming from %s", checkpoint)
     start = time.time()
-    result = trainer.train()
+    result = trainer.train(resume_from_checkpoint=checkpoint)
     elapsed = time.time() - start
     metrics = trainer.evaluate()
 
@@ -233,6 +240,7 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
         "train_examples": len(train_ds),
         "dropped_too_long": train_ds.dropped,
         "steps": result.global_step,
+        "resumed_from": checkpoint,
         "train_runtime_s": round(elapsed, 1),
         "train_loss": round(result.training_loss, 4),
         "eval_loss": round(metrics["eval_loss"], 4),
