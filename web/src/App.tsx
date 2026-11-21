@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from 'react'
 import { api, ApiError, type Health, type Sample, type Variant } from './api'
 import { ResultPanel, type RunState } from './components/ResultPanel'
 import { TEMPLATE_LABELS, VARIANT_LABELS } from './format'
@@ -45,6 +45,28 @@ function HealthBadge({ health, error }: { health: Health | null; error: string |
   )
 }
 
+type SetRuns = Dispatch<SetStateAction<Record<Variant, RunState>>>
+type Controllers = Partial<Record<Variant, AbortController>>
+
+async function runExtraction(variant: Variant, text: string, setRuns: SetRuns, controllers: Controllers) {
+  controllers[variant]?.abort()
+  const controller = new AbortController()
+  controllers[variant] = controller
+  setRuns((r) => ({ ...r, [variant]: { status: 'loading', startedAt: Date.now() } }))
+  try {
+    const data = await api.extract(text, variant, controller.signal)
+    setRuns((r) => ({ ...r, [variant]: { status: 'done', data, text } }))
+  } catch (e) {
+    if (controller.signal.aborted) return
+    const error = e instanceof ApiError ? e.body : { code: 'unknown', message: String(e), details: [] }
+    setRuns((r) => ({ ...r, [variant]: { status: 'error', error, text } }))
+  }
+}
+
+async function runSequentially(variants: Variant[], text: string, setRuns: SetRuns, controllers: Controllers) {
+  for (const v of variants) await runExtraction(v, text, setRuns, controllers)
+}
+
 export default function App() {
   const [dark, toggleTheme] = useTheme()
   const [health, setHealth] = useState<Health | null>(null)
@@ -60,6 +82,7 @@ export default function App() {
   const controllers = useRef<Partial<Record<Variant, AbortController>>>({})
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
     api
       .health()
       .then(setHealth)
@@ -68,53 +91,28 @@ export default function App() {
       .samples()
       .then((s) => {
         setSamples(s)
-        if (s.length > 0) {
-          const wanted = new URLSearchParams(window.location.search).get('sample') ?? 'einvoice'
-          const first = s.find((x) => x.template === wanted || x.id === wanted) ?? s[0]
-          setSampleId(first.id)
-          setText(first.text)
+        if (s.length === 0) return
+        const wanted = params.get('sample') ?? 'einvoice'
+        const first = s.find((x) => x.template === wanted || x.id === wanted) ?? s[0]
+        setSampleId(first.id)
+        setText(first.text)
+        // ?run=both|base|finetuned starts an extraction straight away (used for demos).
+        const mode = params.get('run')
+        const variants: Variant[] =
+          mode === 'both' ? ['finetuned', 'base'] : mode === 'base' || mode === 'finetuned' ? [mode] : []
+        if (variants.length > 0) {
+          setActive(variants[0])
+          void runSequentially(variants, first.text, setRuns, controllers.current)
         }
       })
       .catch(() => setSamples([]))
   }, [])
 
-  // ?run=both|base|finetuned starts an extraction once the sample is loaded (handy for demos).
-  const autorun = useRef(new URLSearchParams(window.location.search).get('run'))
-  useEffect(() => {
-    const mode = autorun.current
-    if (!mode || !text || !health) return
-    autorun.current = null
-    if (mode === 'both') void runBoth()
-    else if (mode === 'base' || mode === 'finetuned') {
-      setActive(mode)
-      void run(mode)
-    }
-  }, [text, health])
+  const run = (variant: Variant) => runExtraction(variant, text, setRuns, controllers.current)
 
-  const run = useCallback(
-    async (variant: Variant) => {
-      controllers.current[variant]?.abort()
-      const controller = new AbortController()
-      controllers.current[variant] = controller
-      const submitted = text
-      setRuns((r) => ({ ...r, [variant]: { status: 'loading', startedAt: Date.now() } }))
-      try {
-        const data = await api.extract(submitted, variant, controller.signal)
-        setRuns((r) => ({ ...r, [variant]: { status: 'done', data, text: submitted } }))
-      } catch (e) {
-        if (controller.signal.aborted) return
-        const error =
-          e instanceof ApiError ? e.body : { code: 'unknown', message: String(e), details: [] }
-        setRuns((r) => ({ ...r, [variant]: { status: 'error', error, text: submitted } }))
-      }
-    },
-    [text],
-  )
-
-  async function runBoth() {
+  const runBoth = () => {
     setActive('finetuned')
-    await run('finetuned')
-    await run('base')
+    void runSequentially(['finetuned', 'base'], text, setRuns, controllers.current)
   }
 
   const available = (v: Variant) => !health || health.models.includes(v)
