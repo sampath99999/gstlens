@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -9,7 +10,13 @@ from pydantic import ValidationError
 
 from gstlens.config import get_settings
 from gstlens.data.build import read_jsonl
-from gstlens.evaluation.metrics import SCALAR_FIELDS, Prediction, Summary, summarize
+from gstlens.evaluation.metrics import (
+    SCALAR_FIELDS,
+    Prediction,
+    Summary,
+    score_document,
+    summarize,
+)
 from gstlens.evaluation.report import write_report
 from gstlens.extraction.base import TextGenerator, Variant
 from gstlens.extraction.parsing import parse_model_output
@@ -101,7 +108,9 @@ def to_prediction(gold: dict, row: dict) -> Prediction:
     )
 
 
-def score_all(test_file: Path, pred_dir: Path) -> dict[str, dict[str, Summary]]:
+def score_all(
+    test_file: Path, pred_dir: Path, group_by: str = "split"
+) -> dict[str, dict[str, Summary]]:
     gold = {r["id"]: r for r in read_jsonl(test_file)}
     results: dict[str, dict[str, Summary]] = {}
     for system in SYSTEMS:
@@ -109,13 +118,40 @@ def score_all(test_file: Path, pred_dir: Path) -> dict[str, dict[str, Summary]]:
         if not path.exists():
             continue
         rows = [r for r in read_jsonl(path) if r["id"] in gold]
+        groups = sorted({r[group_by] for r in rows})
         results[system] = {}
-        for split in (*SPLITS, "all"):
-            subset = [r for r in rows if split == "all" or r["split"] == split]
-            if subset:
-                preds = [to_prediction(gold[r["id"]]["target"], r) for r in subset]
-                results[system][split] = summarize(preds)
+        for group in (*groups, "all") if group_by == "split" else groups:
+            subset = [r for r in rows if group == "all" or r[group_by] == group]
+            preds = [to_prediction(gold[r["id"]]["target"], r) for r in subset]
+            results[system][group] = summarize(preds)
     return results
+
+
+def print_failures(system: str, test_file: Path, pred_dir: Path, split: str, limit: int) -> None:
+    gold = {r["id"]: r for r in read_jsonl(test_file)}
+    rows = [r for r in read_jsonl(pred_dir / f"{system}.jsonl") if r["split"] == split]
+    counts: Counter[str] = Counter()
+    shown = 0
+    for row in rows:
+        target = gold[row["id"]]["target"]
+        parsed = parse_model_output(row["raw_output"]).data
+        score = score_document(target, parsed)
+        wrong = [k for k, ok in score.field_correct.items() if not ok]
+        if not score.items_exact:
+            wrong.append("line_items")
+        counts.update(wrong)
+        if wrong and shown < limit:
+            shown += 1
+            print(f"--- {row['id']} ({row['template']})")
+            if parsed is None:
+                print("  unparseable output:", " ".join(row["raw_output"][:300].split()))
+                continue
+            for name in wrong:
+                pred_value = parsed.get(name)
+                print(f"  {name}: gold={target.get(name)!r}  pred={pred_value!r}")
+    print(f"{system} / {split}: {len(rows)} invoices, field error counts:")
+    for name, n in counts.most_common():
+        print(f"  {name:<16} {n}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -134,7 +170,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         p.add_argument("--pred-dir", type=Path, default=Path("artifacts/eval"))
     run.add_argument("--few-shot-file", type=Path, default=Path("data/few_shot.jsonl"))
     report.add_argument("--out", type=Path, default=Path("results"))
+    failures = sub.add_parser("failures")
+    failures.add_argument("system", choices=SYSTEMS)
+    failures.add_argument("--split", choices=SPLITS, default="test_heldout")
+    failures.add_argument("--limit", type=int, default=10)
+    failures.add_argument("--test-file", type=Path, default=Path("data/generated/test.jsonl"))
+    failures.add_argument("--pred-dir", type=Path, default=Path("artifacts/eval"))
     args = parser.parse_args(argv)
+
+    if args.command == "failures":
+        print_failures(args.system, args.test_file, args.pred_dir, args.split, args.limit)
+        return
 
     if args.command == "run":
         for system in args.systems:
@@ -144,10 +190,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     results = score_all(args.test_file, args.pred_dir)
+    by_template = score_all(args.test_file, args.pred_dir, group_by="template")
     args.out.mkdir(parents=True, exist_ok=True)
-    payload = {s: {k: asdict(v) for k, v in splits.items()} for s, splits in results.items()}
+    payload = {
+        "by_split": {s: {k: asdict(v) for k, v in g.items()} for s, g in results.items()},
+        "by_template": {s: {k: asdict(v) for k, v in g.items()} for s, g in by_template.items()},
+    }
     (args.out / "metrics.json").write_text(json.dumps(payload, indent=2))
-    write_report(results, args.out / "results.md", SCALAR_FIELDS)
+    write_report(results, by_template, args.out / "results.md", SCALAR_FIELDS)
     log.info("wrote %s", args.out / "results.md")
 
 
