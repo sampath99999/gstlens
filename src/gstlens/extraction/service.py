@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -57,16 +58,19 @@ def consistency_checks(invoice: Invoice) -> list[Check]:
 
 
 class InvoiceExtractor:
-    def __init__(self, generator: TextGenerator, few_shot: list[dict] | None = None) -> None:
+    def __init__(
+        self, generator: TextGenerator, few_shot: Mapping[Variant, list[dict]] | None = None
+    ) -> None:
         self.generator = generator
-        self.few_shot = few_shot or []
+        self.few_shot = dict(few_shot or {})
 
     @property
     def variants(self) -> tuple[Variant, ...]:
         return self.generator.variants
 
     def extract(self, text: str, variant: Variant) -> Extraction:
-        generation = self.generator.generate(build_messages(text, self.few_shot), variant)
+        messages = build_messages(text, self.few_shot.get(variant))
+        generation = self.generator.generate(messages, variant)
         parsed = parse_model_output(generation.text)
         if parsed.data is None:
             error = {"loc": [], "msg": parsed.error or "invalid JSON", "type": "json_invalid"}

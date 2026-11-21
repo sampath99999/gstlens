@@ -13,9 +13,11 @@ class Settings(BaseSettings):
     device: str = "auto"
     dtype: Literal["float16", "float32"] = "float16"
     max_new_tokens: int = 640
-    backend: Literal["hf", "fake"] = "hf"
+    backend: Literal["hf", "openai"] = "hf"
+    base_prompt: Literal["zero_shot", "few_shot"] = "few_shot"
+    few_shot_path: Path = Path("data/few_shot.jsonl")
     samples_path: Path = Path("data/samples.jsonl")
-    max_input_chars: int = 8000
+    max_input_chars: int = 12000
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     openai_base_url: str = "http://localhost:11434/v1"
