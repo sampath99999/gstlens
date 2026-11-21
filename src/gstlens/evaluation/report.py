@@ -61,10 +61,35 @@ def _per_field(results: dict[str, dict[str, Summary]], fields: Sequence[str]) ->
     return [*lines, ""]
 
 
-def write_report(results: dict[str, dict[str, Summary]], path: Path, fields: Sequence[str]) -> None:
+def _per_template(by_template: dict[str, dict[str, Summary]]) -> list[str]:
+    systems = list(by_template)
+    templates = sorted({t for groups in by_template.values() for t in groups})
+    lines = [
+        "### Whole invoice exact match by layout",
+        "",
+        "| Layout | n | " + " | ".join(LABELS.get(s, s) for s in systems) + " |",
+        "|---|---|" + "---|" * len(systems),
+    ]
+    for template in templates:
+        n = next(g[template].n for g in by_template.values() if template in g)
+        cells = [
+            pct(by_template[s][template].doc_exact) if template in by_template[s] else "-"
+            for s in systems
+        ]
+        lines.append(f"| {template} | {n} | " + " | ".join(cells) + " |")
+    return [*lines, ""]
+
+
+def write_report(
+    results: dict[str, dict[str, Summary]],
+    by_template: dict[str, dict[str, Summary]],
+    path: Path,
+    fields: Sequence[str],
+) -> None:
     lines: list[str] = []
     for split in ("test_heldout", "test_seen"):
         if any(split in r for r in results.values()):
             lines += _overview(results, split)
     lines += _per_field(results, fields)
-    path.write_text("\n".join(lines), encoding="utf-8")
+    lines += _per_template(by_template)
+    path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
