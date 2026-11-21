@@ -7,6 +7,8 @@ const VARIANTS: Variant[] = ['base', 'finetuned']
 
 function useTheme() {
   const [dark, setDark] = useState(() => {
+    const forced = new URLSearchParams(window.location.search).get('theme')
+    if (forced === 'dark' || forced === 'light') return forced === 'dark'
     try {
       const saved = localStorage.getItem('gstlens-theme')
       if (saved) return saved === 'dark'
@@ -67,13 +69,27 @@ export default function App() {
       .then((s) => {
         setSamples(s)
         if (s.length > 0) {
-          const first = s.find((x) => x.template === 'einvoice') ?? s[0]
+          const wanted = new URLSearchParams(window.location.search).get('sample') ?? 'einvoice'
+          const first = s.find((x) => x.template === wanted || x.id === wanted) ?? s[0]
           setSampleId(first.id)
           setText(first.text)
         }
       })
       .catch(() => setSamples([]))
   }, [])
+
+  // ?run=both|base|finetuned starts an extraction once the sample is loaded (handy for demos).
+  const autorun = useRef(new URLSearchParams(window.location.search).get('run'))
+  useEffect(() => {
+    const mode = autorun.current
+    if (!mode || !text || !health) return
+    autorun.current = null
+    if (mode === 'both') void runBoth()
+    else if (mode === 'base' || mode === 'finetuned') {
+      setActive(mode)
+      void run(mode)
+    }
+  }, [text, health])
 
   const run = useCallback(
     async (variant: Variant) => {
@@ -95,7 +111,7 @@ export default function App() {
     [text],
   )
 
-  const runBoth = async () => {
+  async function runBoth() {
     setActive('finetuned')
     await run('finetuned')
     await run('base')
