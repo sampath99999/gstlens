@@ -77,6 +77,10 @@ On the held-out layout the fine-tuned model gets 44% of invoices fully right. Th
 
 3. **Adding up tax across rates.** On the seen layouts the remaining errors are mostly Tally prints with two GST rates, where the CGST and SGST totals are not printed and have to be summed from `Output CGST @ 6%` and `Output CGST @ 9%` lines. Two of the three such invoices in the test set came back with only one rate's amount (`test-seen-00085`: CGST 29,989.51 instead of 99,091.78). Copying text is reliable at 0.5B; arithmetic is not.
 
+The consistency checks in the API catch most of these cases at run time. Below is the fine-tuned model on a held-out e-invoice sample (OCR noise on): seller, buyer, date and the line item are right, but it reported IGST on an intra-state invoice and took a wrong taxable value, and two checks turn red.
+
+![Fine-tuned model on a held-out e-invoice](docs/heldout-failure.png)
+
 ### Training setup
 
 | | |
