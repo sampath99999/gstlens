@@ -55,7 +55,15 @@ def _dedupe(records: list[dict], seen: set[str]) -> list[dict]:
     return out
 
 
-def build(out_dir: Path, n_train: int, n_val: int, n_seen: int, n_heldout: int, seed: int) -> None:
+def build(
+    out_dir: Path,
+    n_train: int,
+    n_val: int,
+    n_seen: int,
+    n_heldout: int,
+    seed: int,
+    few_shot_path: Path,
+) -> None:
     seen_templates = list(TRAIN_TEMPLATES)
     heldout_templates = list(HELDOUT_TEMPLATES)
     hashes: set[str] = set()
@@ -69,6 +77,7 @@ def build(out_dir: Path, n_train: int, n_val: int, n_seen: int, n_heldout: int, 
     write_jsonl(out_dir / "train.jsonl", train)
     write_jsonl(out_dir / "val.jsonl", val)
     write_jsonl(out_dir / "test.jsonl", test)
+    write_jsonl(few_shot_path, select_few_shot(train))
     log.info("wrote train=%d val=%d test=%d to %s", len(train), len(val), len(test), out_dir)
 
 
@@ -81,6 +90,23 @@ def build_samples(path: Path, seed: int, per_template: int = 2) -> None:
     log.info("wrote %d samples to %s", len(records), path)
 
 
+def select_few_shot(train: list[dict]) -> list[dict]:
+    """Two short examples: an intra-state classic invoice and an inter-state key-value one."""
+
+    def pick(template: str, intra: bool) -> dict:
+        candidates = [
+            r
+            for r in train
+            if r["template"] == template
+            and (r["target"]["cgst"] > 0) == intra
+            and r["target"]["buyer_gstin"]
+            and len(r["target"]["line_items"]) == 2
+        ]
+        return min(candidates, key=lambda r: len(r["text"]))
+
+    return [pick("classic", True), pick("key_value", False)]
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Generate synthetic GST invoice datasets")
@@ -91,8 +117,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--test-heldout", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--samples", type=Path, default=Path("data/samples.jsonl"))
+    parser.add_argument("--few-shot", type=Path, default=Path("data/few_shot.jsonl"))
     args = parser.parse_args(argv)
-    build(args.out, args.train, args.val, args.test_seen, args.test_heldout, args.seed)
+    build(
+        args.out, args.train, args.val, args.test_seen, args.test_heldout, args.seed, args.few_shot
+    )
     build_samples(args.samples, args.seed)
 
 
