@@ -21,13 +21,14 @@ def generate(
     factory = DraftFactory(rng)
     for i in range(n):
         template = templates[i % len(templates)]
-        text, invoice = render(
-            template, factory.draft(), rng, ocr_noise=rng.random() < OCR_NOISE_RATE
-        )
+        draft = factory.draft()
+        noisy = rng.random() < OCR_NOISE_RATE
+        text, invoice = render(template, draft, rng, ocr_noise=noisy)
         yield {
             "id": f"{prefix}-{i:05d}",
             "split": split,
             "template": template,
+            "ocr_noise": noisy,
             "text": text,
             "target": invoice.to_target_json(),
         }
